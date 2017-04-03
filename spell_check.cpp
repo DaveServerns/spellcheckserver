@@ -1,3 +1,7 @@
+/*David Severns 3207 Fiore
+  Due 4/4/17*/
+
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,24 +30,19 @@
 #define BACKLOG 10
 #define DEFAULT_PORT_STR "1776" //default port to listen on
 #define MAX_DATA 1024 // the max that can be read into a "word" from client
+#define QUEUE 5
 
 
 using namespace std;  // to use the c++ cout and c
 
-/*structure to hold the sd and provide mutual exclusion
-struct sock_buf{
-  int sock_d[6]; // hold the socket descriptors
-  int first; // first spot in queue
-  int last; // last spot in queue
-  sem_t mutex; // mutual exclusion
-  sem_t spots; // syn prim to mark open spots init to 6
-  sem_t items; // num items in the queue init to 0
-};*/
+
 
 struct sock_buf connections;
 
+ssize_t readLine(int fd, void *buffer, size_t n);
 vector<string> getDefaultD();
 int getlistenfd(char*);
+void* threads(void* args);
 
 vector<string> dictionary;
 
@@ -79,6 +78,7 @@ a data structure*/
     }
   }
 
+  sbuf_init(&connections, QUEUE);
   int listenFd, socketFd; // to set server side port and read from client port
   struct sockaddr_storage client_addr;
   socklen_t client_addr_size;
@@ -89,6 +89,31 @@ a data structure*/
   char *port = DEFAULT_PORT_STR;
   pthread_t workers[NUM_WORKERS]; // array of pthreads to service clients
 
+  /*run loop to create worker threads*/
+  for(unsigned int k;k<NUM_WORKERS;k++){
+    pthread_create(&workers[k], NULL, threads,NULL );
+  }
+  listenFd = getlistenfd(port); // establish a conncect to listen on default port
+
+  while(1){
+    client_addr_size=sizeof(client_addr);
+    if ((socketFd=accept(listenFd, (struct sockaddr*)&client_addr, &client_addr_size))==-1) {
+      fprintf(stderr, "accept error\n");
+      continue;
+    }
+    if (getnameinfo((struct sockaddr*)&client_addr, client_addr_size,
+		    client_name, MAX_DATA, client_port, MAX_DATA, 0)!=0) {
+      fprintf(stderr, "error getting name information about client\n");
+    } else {
+      printf("accepted connection from %s:%s\n", client_name, client_port);
+    }
+
+
+    sbuf_insert(&connections, socketFd);// add socket to queue wake workers
+
+  //  cout << connections.sock_d[0] << endl;
+
+  }
 
 
   return 0;
@@ -171,4 +196,71 @@ vector<string> getDefaultD(){
   }
 
   return dictionary;
+}
+
+/*read line is also reference to code provided by the echo server*/
+ssize_t readLine(int fd, void *buffer, size_t n) {
+  ssize_t numRead;                    /* # of bytes fetched by last read() */
+  size_t totRead;                     /* Total bytes read so far */
+  char *buf;
+  char ch;
+
+  if (n <= 0 || buffer == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  buf = (char*)buffer;                       /* No pointer arithmetic on "void *" */
+
+  totRead = 0;
+  for (;;) {
+    numRead = read(fd, &ch, 1);
+
+    if (numRead == -1) {
+      if (errno == EINTR)         /* Interrupted --> restart read() */
+	continue;
+      else
+	return -1;              /* Some other error */
+
+    } else if (numRead == 0) {      /* EOF */
+      if (totRead == 0)           /* No bytes read; return 0 */
+	return 0;
+      else                        /* Some bytes read; add '\0' */
+	break;
+
+    } else {                        /* 'numRead' must be 1 if we get here */
+      if (totRead < n - 1) {      /* Discard > (n - 1) bytes */
+	totRead++;
+	*buf++ = ch;
+      }
+
+      if (ch == '\n')
+	break;
+    }
+  }
+
+  *buf = '\0';
+  return totRead;
+}
+
+
+  /*while ((bytes_read = readLine(socketFd, line, (MAX_DATA-1)))>0) {
+    printf("just read %s", line);
+    write(socketFd, line, bytes_read);
+  }
+  printf("connection closed\n");
+  close(socketFd);
+}*/
+
+/*thread code for the workers to run*/
+void* threads(void* args){
+  int socket = sbuf_remove(&connections); // get socket from queue
+  int bytes_read;
+  char line[MAX_DATA];
+  while((bytes_read = readLine(socket, line, (MAX_DATA-1)))>0){
+    printf("just read %s", line );
+    write(socket,line, bytes_read);
+  }
+  printf("Connection closed\n" );
+  close(socket);
 }
